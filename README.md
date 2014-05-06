@@ -1,7 +1,7 @@
 ZenDesk Injector
 ================
 
-Injects ZenDesk Tickets into either Solr 4.x, or Lucid Apollo indexing pipeline, AKA LucidWorks 5
+Injects ZenDesk Tickets into either Solr 4.x or Lucid indexing pipeline
 
 ## Building
 
@@ -56,7 +56,7 @@ Note: You **MUST** create the collection before running this, see Lucid doc.
 
 ```java -jar injector.jar 
     --zendesk yourcompany.zendesk.com --username you@yourcompany.com --password yourpassword \
-    --apollo http://localhost:8765/lucid/api/v1/ --collection demo```
+    -a http://localhost:8765/lucid/api/v1/ -c demo```
 
 
 ## Developer Note

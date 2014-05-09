@@ -2,8 +2,11 @@ package com.lucidworks.connectors.zendesk;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOError;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -143,6 +146,11 @@ public class ZenDeskTickets {
 	    put("source", "zendesk" );
 	}};
 
+	// "Stra\u00DFe" = "Straße"
+	static String TINY_UTF8_DOC = "[{ \"id\" : \"2\", \"fields\" : { \"subject\" : [{ \"name\" : \"subject\", \"value\" : \"Stra\u00DFe\" }] } }]";
+	// double backslash works, but not really the point
+	// static String TINY_UTF8_DOC = "[{ \"id\" : \"2\", \"fields\" : { \"subject\" : [{ \"name\" : \"subject\", \"value\" : \"Stra\\u00DFe\" }] } }]";
+	
 	static Options options;
 
 	HttpSolrServer solr;
@@ -152,6 +160,15 @@ public class ZenDeskTickets {
 	String apolloPipeline;
 	String apolloIndexUrl;
 
+	// For debugging JSON that we're sending to Apollo
+	// getting some UTF-8 encoding issue
+	// Use sequential numbers
+	String dumpOutDir;
+	int dumpOutCounter = 0;
+	// Capture ZenDesk input
+	String dumpInDir;
+	int dumpInCounter = 0;
+
 	String zdServer;
 	String zdUsername;
 	String zdPassword;
@@ -159,12 +176,15 @@ public class ZenDeskTickets {
 	String zdBaseUrl;
 	String zdTicketsUrl;
 
-	public ZenDeskTickets( HttpSolrServer solr, String apolloUrl, String apolloCollection, String apolloPipeline, String zdServer, String zdUsername, String zdPassword ) {
+	public ZenDeskTickets( HttpSolrServer solr, String apolloUrl, String apolloCollection, String apolloPipeline, String dumpInDir, String dumpOutDir, String zdServer, String zdUsername, String zdPassword ) {
 		this.solr = solr;
 
 		this.apolloBaseUrl = apolloUrl;
 		this.apolloCollection = apolloCollection;
 		this.apolloPipeline = apolloPipeline;
+
+		this.dumpInDir = dumpInDir;
+		this.dumpOutDir = dumpOutDir;
 
 		if ( null != this.apolloBaseUrl ) {
 			// Eg: http://localhost:8765/lucid/api/v1/
@@ -232,8 +252,8 @@ public class ZenDeskTickets {
 		}
 		if ( null != apolloIndexUrl ) {
 			// processApolloBatch( jsonDocs );
-			processApolloBatch_full( jsonDocs );
-			// processApolloBatch_docbydoc( jsonDocs );
+			// processApolloBatch_full( jsonDocs );
+			processApolloBatch_docbydoc( jsonDocs );
 		}
 	}
 	void processSolrBatch( Iterator<JsonNode> jsonDocs ) throws Exception {
@@ -278,17 +298,17 @@ public class ZenDeskTickets {
 			// apolloDocs.add( adoc );
 			rowCounter++;
 			System.out.println( "Submitting row " + rowCounter + " of batch to Apollo pipeline" );
-			String payload = jsonTree2String( adoc, mapper );
+
+			// If not nesting in [ ]
+			// String payload = jsonTree2String( adoc, mapper );
+			// postJsonContent( apolloIndexUrl, payload );
+
+			// Nest in [ ]
+			ArrayNode apolloDocs = mapper.createArrayNode();
+			apolloDocs.add( adoc );
+			String payload = jsonTree2String( apolloDocs, mapper );
 			postJsonContent( apolloIndexUrl, payload );
 		}
-//		if ( apolloDocs.size() > 0 ) {
-//			System.out.println( "Submitting " + apolloDocs.size() + " docs to Apollo pipeline" );
-//			String payload = jsonTree2String( apolloDocs, mapper );
-//			postJsonContent( apolloIndexUrl, payload );
-//		}
-//		else {
-//			System.out.println( "WARNING: Empty Apollo batch, nothing to submit" );			
-//		}
 	}
 
 	String jsonTree2String( JsonNode tree ) throws JsonProcessingException {
@@ -476,6 +496,8 @@ public class ZenDeskTickets {
         response.close();
         httpclient.close();
 
+        doInboundDumpIfRequested( new String(buff) );
+
         ObjectMapper m = new ObjectMapper();
         JsonNode rootNode = m.readTree( new String(buff) );
         // "tickets", "next_page", "previous_page", "count"
@@ -487,10 +509,20 @@ public class ZenDeskTickets {
     }
 
 	void postJsonContent( String url, String content ) throws ClientProtocolException, IOException {
-        HttpClient httpClient = new DefaultHttpClient();        
-        HttpPost post = new HttpPost( url );        
+		doOutboundDumpIfRequested( content );
 
-        post.setEntity(  new StringEntity( content, ContentType.create("application/json") )  );
+		HttpClient httpClient = new DefaultHttpClient();        
+        HttpPost post = new HttpPost( url );        
+        // post.setHeader("Content-Type", "application/json; charset=utf-8");
+
+        // post.setEntity(  new StringEntity( content )  );
+        // post.setEntity(  new StringEntity( content, ContentType.create("application/json") )  );
+        // post.setEntity(  new StringEntity( content, ContentType.create("application/json; charset=UTF-8") )  );
+        // post.setEntity(  new StringEntity( content, ContentType.create("application/json; charset=utf-8") )  );
+
+        StringEntity params = new StringEntity( content );
+        params.setContentType("application/json; charset=UTF-8");
+        post.setEntity(params);
 
         HttpResponse response = httpClient.execute( post );
         int code = response.getStatusLine().getStatusCode();
@@ -518,6 +550,57 @@ public class ZenDeskTickets {
         }
 	}
 
+	void utf8Test() throws ClientProtocolException, IOException {
+		String payload = TINY_UTF8_DOC;
+		System.out.println( "POSTing UTF-8 JSON Doc '" + payload + "' to '" + apolloIndexUrl + "'" );
+		postJsonContent( apolloIndexUrl, payload );
+	}
+
+	void doOutboundDumpIfRequested( String payload ) throws IOException {
+		if ( null==dumpOutDir ) {
+			return;
+		}
+		File dumpDir = checkOrCreateDumpDir( dumpOutDir );
+		String dumpName = "apollo-" + (dumpOutCounter++) + ".json";
+		File dumpFile = new File( dumpDir, dumpName );
+		OutputStreamWriter out = new OutputStreamWriter(new FileOutputStream(dumpFile), "UTF-8" );
+		out.write( payload );
+		out.close();
+	}
+	void doInboundDumpIfRequested( String payload ) throws IOException {
+		if ( null==dumpInDir ) {
+			return;
+		}
+		File dumpDir = checkOrCreateDumpDir( dumpInDir );
+		String dumpName = "zendesk-" + (dumpInCounter++) + ".json";
+		File dumpFile = new File( dumpDir, dumpName );
+		OutputStreamWriter out = new OutputStreamWriter(new FileOutputStream(dumpFile), "UTF-8" );
+		out.write( payload );
+		out.close();
+	}
+	File checkOrCreateDumpDir( String dirName ) throws IOException {
+		File outDir = new File(dirName);
+		if ( outDir.exists() ) {
+			if ( outDir.isDirectory() ) {
+				if ( outDir.canWrite() ) {
+					return outDir;
+				}
+				else {
+					throw new IOException( "Dump Directory '" + dirName + "' is not writeable" );
+				}
+			}
+			else {
+				throw new IOException( "Dump Directory '" + dirName + "' is not a directory!" );				
+			}
+		}
+		else {
+			if ( ! outDir.mkdirs() ) {
+				throw new IOException( "Unable to create Dump Directory '" + dirName + "'" );								
+			}
+		}
+		return outDir;
+	}
+	
 	static void helpAndExit() {
 		helpAndExit( null, 1 );
 	}
@@ -541,6 +624,9 @@ public class ZenDeskTickets {
 		options.addOption( "c", "collection", true, "Collection name for Solr or Apollo, required for Apollo" );
 		options.addOption( "p", "pipeline", true, "Pipeline name for Apollo, optional" );
 
+		options.addOption( "o", "dump-out-dir", true, "Debugging: Dump JSON content being submitted to Apollo pipeline to this directory; not applicable for Solr" );
+		options.addOption( "i", "dump-in-dir", true, "Debugging: Dump JSON content recieved from ZenDesk to this directory" );
+
 		options.addOption( "z", "zendesk", true, "Zendesk site, Eg: \"lucidimagination.zendesk.com\" (we add the https and /api/v2...)" );
 		// -p password overlaps with -p pipeline
 		// options.addOption( "u", "username", true, "Zendesk username" );
@@ -555,6 +641,8 @@ public class ZenDeskTickets {
                  .hasArg()
                  .withArgName("PASSWORD")
                  .create() );
+
+		options.addOption( "8", "utf8-test", false, "Debugging: Send a tiny UTF-8 test document into Apollo; requires Apollo server and collection" );
 
 		if ( args.length < 1 ) {
 	        helpAndExit();
@@ -586,6 +674,8 @@ public class ZenDeskTickets {
 	    
 	    String collection = cmd.getOptionValue( "collection" );
 	    String pipeline = cmd.getOptionValue( "pipeline" );
+	    String dumpInDir = cmd.getOptionValue( "dump-in-dir" );
+	    String dumpOutDir = cmd.getOptionValue( "dump-out-dir" );
    
 	    if ( null==apolloUrl && null!=pipeline ) {
 	        helpAndExit( "Pipeline can only be set when submitting to Apollo", 4 );
@@ -594,6 +684,15 @@ public class ZenDeskTickets {
 	    if ( null!=apolloUrl && null==collection ) {
 	        helpAndExit( "Must specify collection when submitting to Apollo; and do NOT include it as part of the Apollo URL", 5 );
 	    }
+
+	    if ( null==apolloUrl && null!=dumpOutDir ) {
+	        helpAndExit( "dump-dir can only be set when submitting to Apollo", 4 );
+	    }
+
+	    // UTF-8 test
+	    if( cmd.hasOption("8") && (null==apolloUrl || null==collection) ) {
+	        helpAndExit( "UTF-8 test (utf8-test) requires Apollo URL and collection", 5 );
+        }
 
 	    // Solr & Apollo
 	    HttpSolrServer solr = null;
@@ -626,7 +725,13 @@ public class ZenDeskTickets {
 	        helpAndExit( "Must specifify ZenDesk host, username and password", 2 );
 	    }
 
-		ZenDeskTickets zd = new ZenDeskTickets( solr, apolloUrl, collection, pipeline, zenDeskServer, username, password );
-		zd.fetchAllAndSubmit();
+		ZenDeskTickets zd = new ZenDeskTickets( solr, apolloUrl, collection, pipeline, dumpInDir, dumpOutDir, zenDeskServer, username, password );
+	    // UTF-8 test
+	    if( cmd.hasOption("8") ) {
+	    	zd.utf8Test();
+        }
+	    else {
+	    	zd.fetchAllAndSubmit();
+	    }
 	}
 }

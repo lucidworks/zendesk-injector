@@ -28,6 +28,7 @@ import org.apache.commons.cli.OptionBuilder;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
+// import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.http.HttpResponse;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -251,9 +252,8 @@ public class ZenDeskTickets {
 			processSolrBatch( jsonDocs );
 		}
 		if ( null != apolloIndexUrl ) {
-			// processApolloBatch( jsonDocs );
-			// processApolloBatch_full( jsonDocs );
-			processApolloBatch_docbydoc( jsonDocs );
+			processApolloBatch_full( jsonDocs );
+			// processApolloBatch_docbydoc( jsonDocs );
 		}
 	}
 	void processSolrBatch( Iterator<JsonNode> jsonDocs ) throws Exception {
@@ -512,17 +512,22 @@ public class ZenDeskTickets {
 		doOutboundDumpIfRequested( content );
 
 		HttpClient httpClient = new DefaultHttpClient();        
-        HttpPost post = new HttpPost( url );        
+        HttpPost post = new HttpPost( url );
+
+        // content = StringEscapeUtils.escapeJson( content );
+        // content = StringEscapeUtils.escapeJava( content );
+        content = escapeUnicode( content );
+
         // post.setHeader("Content-Type", "application/json; charset=utf-8");
 
         // post.setEntity(  new StringEntity( content )  );
         // post.setEntity(  new StringEntity( content, ContentType.create("application/json") )  );
-        // post.setEntity(  new StringEntity( content, ContentType.create("application/json; charset=UTF-8") )  );
+        post.setEntity(  new StringEntity( content, ContentType.create("application/json; charset=UTF-8") )  );
         // post.setEntity(  new StringEntity( content, ContentType.create("application/json; charset=utf-8") )  );
 
-        StringEntity params = new StringEntity( content );
-        params.setContentType("application/json; charset=UTF-8");
-        post.setEntity(params);
+        // StringEntity params = new StringEntity( content );
+        // params.setContentType("application/json; charset=UTF-8");
+        // post.setEntity(params);
 
         HttpResponse response = httpClient.execute( post );
         int code = response.getStatusLine().getStatusCode();
@@ -548,6 +553,29 @@ public class ZenDeskTickets {
 	            // System.out.println(responseMap.get("somevalue"));
 	        }
         }
+	}
+
+	// Workaround for problem I'm having posting JSON
+	// See http://stackoverflow.com/questions/23573994/
+	String escapeUnicode( String inBuff ) {
+		StringBuffer outBuff = new StringBuffer();
+		for ( int i = 0; i<inBuff.length(); i++ ) {
+			char c = inBuff.charAt(i);
+			int ic = c;
+			// if ( ic >= 32 && ic <= 127 )
+			if ( ic <= 127 )
+			{
+				outBuff.append( c );
+//				if ( c == '\\' ) {
+//					outBuff.append( c );					
+//				}
+			}
+			else {
+				outBuff.append( "\\u" );
+				outBuff.append( String.format("%04d", ic).toUpperCase() );
+			}
+		}
+		return new String( outBuff );
 	}
 
 	void utf8Test() throws ClientProtocolException, IOException {

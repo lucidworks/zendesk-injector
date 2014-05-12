@@ -44,6 +44,7 @@ import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.impl.client.HttpClients;
+import org.apache.http.util.EntityUtils;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.HttpSolrServer;
 import org.apache.solr.common.SolrInputDocument;
@@ -514,22 +515,12 @@ public class ZenDeskTickets {
 		HttpClient httpClient = new DefaultHttpClient();        
         HttpPost post = new HttpPost( url );
 
-        // content = StringEscapeUtils.escapeJson( content );
-        // content = StringEscapeUtils.escapeJava( content );
-        content = escapeUnicode( content );
-
-        // post.setHeader("Content-Type", "application/json; charset=utf-8");
-
-        // post.setEntity(  new StringEntity( content )  );
-        // post.setEntity(  new StringEntity( content, ContentType.create("application/json") )  );
-        post.setEntity(  new StringEntity( content, ContentType.create("application/json; charset=UTF-8") )  );
-        // post.setEntity(  new StringEntity( content, ContentType.create("application/json; charset=utf-8") )  );
-
-        // StringEntity params = new StringEntity( content );
-        // params.setContentType("application/json; charset=UTF-8");
-        // post.setEntity(params);
+        StringEntity entity = new StringEntity(TINY_UTF8_DOC, ContentType.APPLICATION_JSON);
+        //StringEntity entity = new StringEntity(TINY_UTF8_DOC, ContentType.create("application/json; charset=utf-8"));
+        post.setEntity(entity);
 
         HttpResponse response = httpClient.execute( post );
+
         int code = response.getStatusLine().getStatusCode();
         // Apollo pipeline submit returns 204 and no text
         if ( code != 200 && code != 204 ) {
@@ -542,40 +533,14 @@ public class ZenDeskTickets {
 
         // 204 means NO response content, http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html
         if ( code != 204 ) {
-	        BufferedReader rd = new BufferedReader(new InputStreamReader(response.getEntity().getContent()));
-	        String line = "";
-	        while ((line = rd.readLine()) != null) {
-	        	//Parse our JSON response
-	        	// Noggit
-	            // JSONParser j = new JSONParser();
-	            // JSONObject o = (JSONObject)j.parse(line);
-	            // Map responseMap = (Map)o.get("response");
-	            // System.out.println(responseMap.get("somevalue"));
-	        }
-        }
-	}
 
-	// Workaround for problem I'm having posting JSON
-	// See http://stackoverflow.com/questions/23573994/
-	String escapeUnicode( String inBuff ) {
-		StringBuffer outBuff = new StringBuffer();
-		for ( int i = 0; i<inBuff.length(); i++ ) {
-			char c = inBuff.charAt(i);
-			int ic = c;
-			// if ( ic >= 32 && ic <= 127 )
-			if ( ic <= 127 )
-			{
-				outBuff.append( c );
-//				if ( c == '\\' ) {
-//					outBuff.append( c );					
-//				}
-			}
-			else {
-				outBuff.append( "\\u" );
-				outBuff.append( String.format("%04d", ic).toUpperCase() );
-			}
-		}
-		return new String( outBuff );
+	        String result = EntityUtils.toString(response.getEntity());
+	        // System.out.println(result);
+	        // If need response
+	        // ObjectMapper mapper = new ObjectMapper();
+	        // JsonNode node = mapper.readValue(result, JsonNode.class);
+
+        }
 	}
 
 	void utf8Test() throws ClientProtocolException, IOException {

@@ -515,8 +515,8 @@ public class ZenDeskTickets {
 		HttpClient httpClient = new DefaultHttpClient();        
         HttpPost post = new HttpPost( url );
 
-        StringEntity entity = new StringEntity(TINY_UTF8_DOC, ContentType.APPLICATION_JSON);
-        //StringEntity entity = new StringEntity(TINY_UTF8_DOC, ContentType.create("application/json; charset=utf-8"));
+        StringEntity entity = new StringEntity( content, ContentType.APPLICATION_JSON);
+        //StringEntity entity = new StringEntity( content, ContentType.create("application/json; charset=utf-8"));
         post.setEntity(entity);
 
         HttpResponse response = httpClient.execute( post );

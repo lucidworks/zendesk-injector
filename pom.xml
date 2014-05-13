@@ -113,7 +113,8 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
             <!-- Set in ~/.mavenrc -->
-            <jvm>${env.JAVA_HOME}/bin/java</jvm>
+            <!-- export JAVA_HOME_7=`javahome -v 1.7` -->
+            <jvm>${env.JAVA_HOME_7}/bin/java</jvm>
         </configuration>
       </plugin>
 

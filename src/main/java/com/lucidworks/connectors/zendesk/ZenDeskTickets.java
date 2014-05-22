@@ -335,13 +335,12 @@ public class ZenDeskTickets {
 		if ( null==id ) {
 			throw new IllegalArgumentException( "JSON document doesn't have a valid \"id\" field." );
 		}
-		// ObjectMapper mapper = new ObjectMapper();
 		// Create the fields subtree first
-		// ArrayNode fields = mapper.createArrayNode();
-		JsonNode fields = mapper.createObjectNode();
+		ArrayNode fields = mapper.createArrayNode();
 		addAsIsFieldsToApolloFields( jdoc, fields, mapper );
 		addSimpleListFieldsToApolloFields( jdoc, fields, mapper );
 		addFixedValueFieldsToApolloFields( jdoc, fields, mapper );
+
 		// Create the final high level doc
 		JsonNode outNode = mapper.createObjectNode();
 
@@ -362,7 +361,7 @@ public class ZenDeskTickets {
 	        }
 		}		
 	}
-	void addAsIsFieldsToApolloFields( JsonNode jdoc, JsonNode fields, ObjectMapper mapper ) {
+	void addAsIsFieldsToApolloFields( JsonNode jdoc, ArrayNode fields, ObjectMapper mapper ) {
 		for ( String fieldName : FIELDS_COPY_AS_IS ) {
 			// handled separately for Apollo
 			if ( fieldName.equals(ID_FIELD) ) {
@@ -372,12 +371,10 @@ public class ZenDeskTickets {
 	        if ( null!=inValueNode ) {
 		        String valueStr = inValueNode.asText();
 		        if ( null!=valueStr && ! valueStr.equals("null") && valueStr.trim().length()>0 ) {
-		    		JsonNode outValueInnerNode = mapper.createObjectNode();
-		    		((ObjectNode) outValueInnerNode).put( "name", fieldName );
-		    		((ObjectNode) outValueInnerNode).put( "value", valueStr );
-		    		ArrayNode polyValuesNode = mapper.createArrayNode();
-		    		polyValuesNode.add( outValueInnerNode );
-		    		((ObjectNode) fields).put( fieldName, polyValuesNode );
+		    		JsonNode outValueNode = mapper.createObjectNode();
+		    		((ObjectNode) outValueNode).put( "name", fieldName );
+		    		((ObjectNode) outValueNode).put( "value", valueStr );
+		    		fields.add( outValueNode );
 		        }
 	        }
 		}		
@@ -395,7 +392,7 @@ public class ZenDeskTickets {
 	        }
 		}		
 	}
-	void addSimpleListFieldsToApolloFields( JsonNode jdoc, JsonNode fields, ObjectMapper mapper ) {
+	void addSimpleListFieldsToApolloFields( JsonNode jdoc, ArrayNode fields, ObjectMapper mapper ) {
 		for ( String fieldName : FIELDS_SIMPLE_LIST ) {
 			// handled separately for Apollo
 			if ( fieldName.equals(ID_FIELD) ) {
@@ -403,18 +400,14 @@ public class ZenDeskTickets {
 			}
 	        JsonNode listNode = jdoc.path( fieldName );
 	        if ( null!=listNode ) {
-	    		ArrayNode polyValuesNode = mapper.createArrayNode();
-	        	for ( JsonNode valueNode : listNode ) {
-			        String valueStr = valueNode.asText();
-			        if ( null!=valueStr && ! valueStr.equals("null") && valueStr.trim().length()>0 ) {
-			    		JsonNode outValueInnerNode = mapper.createObjectNode();
-			    		((ObjectNode) outValueInnerNode).put( "name", fieldName );
-			    		((ObjectNode) outValueInnerNode).put( "value", valueStr );
-			    		polyValuesNode.add( outValueInnerNode );
-			        }	        		
-	        	}
-	        	if ( polyValuesNode.size() > 0 ) {
-	        		((ObjectNode) fields).put( fieldName, polyValuesNode );
+	        	for ( JsonNode inValueNode : listNode ) {
+			        String valueStr = inValueNode.asText();
+    		        if ( null!=valueStr && ! valueStr.equals("null") && valueStr.trim().length()>0 ) {
+    		    		JsonNode outValueNode = mapper.createObjectNode();
+    		    		((ObjectNode) outValueNode).put( "name", fieldName );
+    		    		((ObjectNode) outValueNode).put( "value", valueStr );
+    		    		fields.add( outValueNode );
+    		        }	    	        
 	        	}
 	        }
 		}		
@@ -424,7 +417,7 @@ public class ZenDeskTickets {
 			sdoc.addField( item.getKey(), item.getValue() );
 		}
 	}
-	void addFixedValueFieldsToApolloFields( JsonNode jdoc, JsonNode fields, ObjectMapper mapper ) {
+	void addFixedValueFieldsToApolloFields( JsonNode jdoc, ArrayNode fields, ObjectMapper mapper ) {
 		for ( Entry<String, String> item : FIELDS_CONSTANT_VALUES.entrySet() ) {
 			String fieldName = item.getKey();
 			String valueStr = item.getValue();
@@ -432,12 +425,10 @@ public class ZenDeskTickets {
 			if ( fieldName.equals(ID_FIELD) ) {
 				continue;
 			}
-    		JsonNode outValueInnerNode = mapper.createObjectNode();
-    		((ObjectNode) outValueInnerNode).put( "name", fieldName );
-    		((ObjectNode) outValueInnerNode).put( "value", valueStr );
-    		ArrayNode polyValuesNode = mapper.createArrayNode();
-    		polyValuesNode.add( outValueInnerNode );
-    		((ObjectNode) fields).put( fieldName, polyValuesNode );
+    		JsonNode outValueNode = mapper.createObjectNode();
+    		((ObjectNode) outValueNode).put( "name", fieldName );
+    		((ObjectNode) outValueNode).put( "value", valueStr );
+    		fields.add( outValueNode );
 		}
 	}
 

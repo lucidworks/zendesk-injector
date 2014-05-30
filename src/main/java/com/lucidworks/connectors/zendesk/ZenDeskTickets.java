@@ -2,6 +2,7 @@ package com.lucidworks.connectors.zendesk;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOError;
 import java.io.IOException;
@@ -17,6 +18,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -147,6 +149,33 @@ public class ZenDeskTickets {
 	static final Map<String, String> FIELDS_CONSTANT_VALUES = new HashMap<String , String>() {{
 	    put("source", "zendesk" );
 	}};
+	
+	/*
+	 * For a given ID fieldname, what is the actual object name we use in the REST URL
+	 * Eg: for requester_id:1234 we do a lookup in "users", /api/v2/users/1234.json
+	 * Put fieldname without the ID, we'll add that.
+	 * 
+	 * Some that we're not doing:
+	 * external_id, problem_id, group_id, ticket_form_id, forum_topic_id -> topic
+	 * We don't handle multi-ids at the moment, so ignoring these too, and possibly not important anyway
+	 * collaborator_ids, sharing_agreement_ids, followup_ids
+	 */
+	static final Map<String,String> ID_FIELD_TO_OBJECT_MAPPING = new HashMap<String, String>() {{
+		put( "requester", "user" );
+		put( "submitter", "user" );
+		put( "assignee", "user" );
+		put( "organization", "organization" );
+	}};
+	/*
+	 * For an ID based object lookup, which fields do we want to grab?
+	 * Typically don't need to get ID since we already have it for lookup.
+	 * Also typically don't need nested IDs, most of those are surfaced in parent record.
+	 */
+	static final Map<String,List<String>> ID_OBJECT_FIELDS = new HashMap<String, List<String>>() {{
+		put( "user", Arrays.asList(new String[]{ "name", "email", "phone", "details", "notes", "url"}) );
+		put( "organization", Arrays.asList(new String[]{ "name", "details", "notes", "domain_names", "url"}) );
+	}};
+	static final String NOT_FOUND_CACHE_SENTINEL = "NOT_FOUND";
 
 	// "Stra\u00DFe" = "Straße"
 	static String TINY_UTF8_DOC = "[{ \"id\" : \"2\", \"fields\" : { \"subject\" : [{ \"name\" : \"subject\", \"value\" : \"Stra\u00DFe\" }] } }]";
@@ -171,6 +200,13 @@ public class ZenDeskTickets {
 	String dumpInDir;
 	int dumpInCounter = 0;
 
+	// Cache ancillary ZenDesk objects
+	// Optional Disk based cache
+	String cacheDir;
+	// In-memory cache
+	Map<String,LRUCache<String,String>> objectsCache = new LinkedHashMap<>();
+	static final int CACHE_ENTRIES = 1000; // 1000 * 1k * 2 = 2 Megs worst case
+	
 	String zdServer;
 	String zdUsername;
 	String zdPassword;
@@ -178,7 +214,9 @@ public class ZenDeskTickets {
 	String zdBaseUrl;
 	String zdTicketsUrl;
 
-	public ZenDeskTickets( HttpSolrServer solr, String apolloUrl, String apolloCollection, String apolloPipeline, String dumpInDir, String dumpOutDir, String zdServer, String zdUsername, String zdPassword ) {
+	public ZenDeskTickets( HttpSolrServer solr, String apolloUrl, String apolloCollection,
+			String apolloPipeline, String dumpInDir, String dumpOutDir, String cacheDir,
+			String zdServer, String zdUsername, String zdPassword ) {
 		this.solr = solr;
 
 		this.apolloBaseUrl = apolloUrl;
@@ -187,6 +225,7 @@ public class ZenDeskTickets {
 
 		this.dumpInDir = dumpInDir;
 		this.dumpOutDir = dumpOutDir;
+		this.cacheDir = cacheDir;
 
 		if ( null != this.apolloBaseUrl ) {
 			// Eg: http://localhost:8765/lucid/api/v1/
@@ -216,7 +255,7 @@ public class ZenDeskTickets {
 	void fetchAllAndSubmit() throws Exception {
     	long overallStart = System.currentTimeMillis();
 		System.out.println( "Fetching initial page: '" + zdTicketsUrl + "'" );
-		JsonNode content = fetchUrl( zdTicketsUrl );
+		JsonNode content = fetchUrlAsJson( zdTicketsUrl );
         // Possible children: "tickets", "next_page", "previous_page", "count"
         JsonNode countNode = content.path("count");
         System.out.println( "Ticket Count = " + countNode );
@@ -239,7 +278,7 @@ public class ZenDeskTickets {
             	break;
             }
     		System.out.println( "Fetching page: '" + nextPageUrl + "'" );
-            content = fetchUrl( nextPageUrl );
+            content = fetchUrlAsJson( nextPageUrl );
             // break;
         }
     	long overallStop = System.currentTimeMillis();
@@ -321,16 +360,17 @@ public class ZenDeskTickets {
 		return writer.writeValueAsString( tree );
 	}
 	
-	SolrInputDocument jsonDoc2SolrDoc( JsonNode jdoc ) {
+	SolrInputDocument jsonDoc2SolrDoc( JsonNode jdoc ) throws Exception {
 		SolrInputDocument sdoc = new SolrInputDocument();
 		// Copy as-is fields
 		addAsIsFieldsToSolrDoc( jdoc, sdoc );
 		addSimpleListFieldsToSolrDoc( jdoc, sdoc );
 		addFixedValueFieldsToSolrDoc( jdoc, sdoc );
+		addObjectIdLookupsToSolrDoc( jdoc, sdoc );
 		// TODO: handle other field types
 		return sdoc;
 	}
-	JsonNode jsonDoc2ApolloDoc( JsonNode jdoc, ObjectMapper mapper ) {
+	JsonNode jsonDoc2ApolloDoc( JsonNode jdoc, ObjectMapper mapper ) throws Exception {
 		String id = exractIdFromJsonDoc( jdoc );
 		if ( null==id ) {
 			throw new IllegalArgumentException( "JSON document doesn't have a valid \"id\" field." );
@@ -340,6 +380,7 @@ public class ZenDeskTickets {
 		addAsIsFieldsToApolloFields( jdoc, fields, mapper );
 		addSimpleListFieldsToApolloFields( jdoc, fields, mapper );
 		addFixedValueFieldsToApolloFields( jdoc, fields, mapper );
+		addObjectIdLookupsToApolloFields( jdoc, fields, mapper );
 
 		// Create the final high level doc
 		JsonNode outNode = mapper.createObjectNode();
@@ -432,6 +473,182 @@ public class ZenDeskTickets {
 		}
 	}
 
+	void addObjectIdLookupsToSolrDoc( JsonNode jdoc, SolrInputDocument sdoc ) throws Exception {
+		// For every _id field we're looking for
+		for ( Entry<String, String> entry : ID_FIELD_TO_OBJECT_MAPPING.entrySet() ) {
+			// field name -> type name
+			String baseName = entry.getKey();
+			String objectType = entry.getValue();
+			// Get the ID and check it
+			String fieldName = baseName + "_id";
+	        JsonNode idValueNode = jdoc.path( fieldName );
+	        if ( null==idValueNode ) {
+	        	continue;
+	        }
+	        String idStr = idValueNode.asText();
+	        if ( null==idStr || idStr.equals("null") || idStr.trim().length()<1 ) {
+	        	continue;
+	        }
+	        // Fetch the object from ZenDesk or memory and disk cache
+	        JsonNode object = fetchObjectOrNull( objectType, idStr );
+	        if ( null==object ) {
+	        	continue;
+	        }
+	        // Grab the fields from it that we care about
+			List<String> subFields = ID_OBJECT_FIELDS.get( objectType );
+	        for ( String subFieldName : subFields ) {
+		        JsonNode subValueNode = object.path( subFieldName );
+		        if ( null==subValueNode ) {
+		        	continue;
+		        }
+		        String subValueStr = subValueNode.asText();
+		        if ( null==subValueStr || subValueStr.equals("null") || subValueStr.trim().length()<1 ) {
+		        	continue;
+		        }
+		        // Create names like organization_name
+		        String fullSubFieldName = baseName + "_" + subFieldName;
+		        // Add to Solr doc and done!
+				sdoc.addField( fullSubFieldName, subValueStr );
+	        }
+		}		
+	}
+
+	void addObjectIdLookupsToApolloFields( JsonNode jdoc, ArrayNode fields, ObjectMapper mapper ) throws Exception {
+		// For every _id field we're looking for
+		for ( Entry<String, String> entry : ID_FIELD_TO_OBJECT_MAPPING.entrySet() ) {
+			// field name -> type name
+			String baseName = entry.getKey();
+			String objectType = entry.getValue();
+			// Get the ID and check it
+			String fieldName = baseName + "_id";
+	        JsonNode idValueNode = jdoc.path( fieldName );
+	        if ( null==idValueNode ) {
+	        	continue;
+	        }
+	        String idStr = idValueNode.asText();
+	        if ( null==idStr || idStr.equals("null") || idStr.trim().length()<1 ) {
+	        	continue;
+	        }
+	        // Fetch the object from ZenDesk or memory and disk cache
+	        JsonNode object = fetchObjectOrNull( objectType, idStr );
+	        if ( null==object ) {
+	        	continue;
+	        }
+	        // Grab the fields from it that we care about
+			List<String> subFields = ID_OBJECT_FIELDS.get( objectType );
+	        for ( String subFieldName : subFields ) {
+		        JsonNode subValueNode = object.path( subFieldName );
+		        if ( null==subValueNode ) {
+		        	continue;
+		        }
+		        String subValueStr = subValueNode.asText();
+		        if ( null==subValueStr || subValueStr.equals("null") || subValueStr.trim().length()<1 ) {
+		        	continue;
+		        }
+		        // Create names like organization_name
+		        String fullSubFieldName = baseName + "_" + subFieldName;
+	        	JsonNode outValueNode = mapper.createObjectNode();
+	    		((ObjectNode) outValueNode).put( "name", fullSubFieldName );
+	    		((ObjectNode) outValueNode).put( "value", subValueStr );
+	    		fields.add( outValueNode );	        	
+	        }
+		}		
+	}
+    JsonNode fetchObjectOrNull( String objectTypeName, String idStr ) throws Exception {
+    	String objectStr = fetchObjectStringOrNull( objectTypeName, idStr );
+    	if ( objectStr==null ) {
+    		return null;
+    	}
+        ObjectMapper m = new ObjectMapper();
+        JsonNode rootNode = m.readTree( objectStr );
+        JsonNode objectNode = rootNode.path( objectTypeName );
+        return objectNode;
+    }
+    String fetchObjectStringOrNull( String objectTypeName, String idStr ) throws IOException {
+    	// Find cache for this object type
+    	LRUCache<String,String> cache = null;
+    	if ( objectsCache.containsKey( objectTypeName ) ) {
+    		cache = objectsCache.get( objectTypeName );
+    	}
+    	else {
+    		cache = new LRUCache<String,String>( CACHE_ENTRIES );
+    		objectsCache.put( objectTypeName, cache );
+    	}
+    	// If cache hit, return result
+    	String content = cache.get( idStr );
+    	if ( null!=content ) {
+    		if ( content.startsWith(NOT_FOUND_CACHE_SENTINEL) ) {
+    			return null;
+    		}
+    		return content;
+    	}
+ 
+    	// Try Disk Cache
+    	if ( null!=cacheDir ) {
+    		File cacheFile = calcCacheFile( objectTypeName, idStr );
+    		content = readTextFileOrNull( cacheFile );
+    		if ( null!=content ) {
+    			cache.put( idStr, content );
+        		if ( content.startsWith(NOT_FOUND_CACHE_SENTINEL) ) {
+        			return null;
+        		}    			
+    			return content;
+    		}
+    	}
+
+    	// fetch from web
+    	String url = calcObjectUrl( objectTypeName, idStr );
+		System.out.println( "Fetching " + objectTypeName + ":" + idStr + " from " + url );
+		try {
+			content = fetchUrlAsString( url );
+		} catch ( Exception e ) {
+			content = NOT_FOUND_CACHE_SENTINEL;
+			System.out.println( "WARNING: Failed URL " + url );
+		}
+    	// Save to disk cache
+    	if ( null!=cacheDir ) {
+    		File cacheFile = calcCacheFile( objectTypeName, idStr );
+    		writeTextFile( cacheFile, content );
+    	}
+    	// Save to memory cache
+		cache.put( idStr, content );
+		if ( content.startsWith(NOT_FOUND_CACHE_SENTINEL) ) {
+			return null;
+		}    			
+		return content;
+    }
+    File calcCacheFile( String objectTypeName, String idStr ) throws IOException {
+		File cacheDir = checkOrCreateDir( this.cacheDir );
+		String fileName = "zendesk-" + objectTypeName + "-" + idStr + ".json";
+		File fullCacheFile = new File( cacheDir, fileName );
+		return fullCacheFile;
+    }
+    String calcObjectUrl( String objectTypeName, String idStr ) {
+    	// zdBaseUrl = "https://" + zdServer + "/api/v2/"
+    	// We want:
+    	// https://lucidimagination.zendesk.com/api/v2/users/232371433.json
+    	// Notice the object type is plural here
+    	return zdBaseUrl + objectTypeName + "s/" + idStr + ".json";
+    }
+    void writeTextFile( File targetFile, String content ) throws IOException {
+		OutputStreamWriter out = new OutputStreamWriter(new FileOutputStream(targetFile), "UTF-8" );
+		out.write( content );
+		out.close();
+    }
+    String readTextFileOrNull( File targetFile ) throws IOException {
+    	if ( ! targetFile.exists() ) {
+    		return null;
+    	}
+        StringBuffer buff = new StringBuffer();
+        BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(targetFile), "UTF-8"));
+        String line;
+        while ((line = in.readLine()) != null) {
+            buff.append( line ).append( '\n' );
+        }
+		in.close();
+		return new String(buff);
+    }
+
 	// Be super fussy
 	String exractIdFromJsonDoc( JsonNode jdoc ) {
 		String id = null;
@@ -455,7 +672,7 @@ public class ZenDeskTickets {
         return id;
 	}
 
-	JsonNode fetchUrl( String url ) throws Exception {
+	String fetchUrlAsString( String url ) throws Exception {
         // System.out.println( "FETCH: " + url );
 		// URI uri = new URI( url );
 		URL uri = new URL( url );
@@ -487,17 +704,18 @@ public class ZenDeskTickets {
     
         response.close();
         httpclient.close();
+        
+        return new String(buff);
+	}
+	JsonNode fetchUrlAsJson( String url ) throws Exception {
+		String content = fetchUrlAsString( url );
 
-        doInboundDumpIfRequested( new String(buff) );
+        doInboundDumpIfRequested( content );
 
         ObjectMapper m = new ObjectMapper();
-        JsonNode rootNode = m.readTree( new String(buff) );
-        // "tickets", "next_page", "previous_page", "count"
-        // JsonNode countNode = rootNode.path("count");
-        // System.out.println( "Count = " + countNode );
+        JsonNode rootNode = m.readTree( content );
         
-        return rootNode;
-    
+        return rootNode;    
     }
 
 	void postJsonContent( String url, String content ) throws ClientProtocolException, IOException {
@@ -544,7 +762,7 @@ public class ZenDeskTickets {
 		if ( null==dumpOutDir ) {
 			return;
 		}
-		File dumpDir = checkOrCreateDumpDir( dumpOutDir );
+		File dumpDir = checkOrCreateDir( dumpOutDir );
 		String dumpName = "apollo-" + (dumpOutCounter++) + ".json";
 		File dumpFile = new File( dumpDir, dumpName );
 		OutputStreamWriter out = new OutputStreamWriter(new FileOutputStream(dumpFile), "UTF-8" );
@@ -555,14 +773,14 @@ public class ZenDeskTickets {
 		if ( null==dumpInDir ) {
 			return;
 		}
-		File dumpDir = checkOrCreateDumpDir( dumpInDir );
+		File dumpDir = checkOrCreateDir( dumpInDir );
 		String dumpName = "zendesk-" + (dumpInCounter++) + ".json";
 		File dumpFile = new File( dumpDir, dumpName );
 		OutputStreamWriter out = new OutputStreamWriter(new FileOutputStream(dumpFile), "UTF-8" );
 		out.write( payload );
 		out.close();
 	}
-	File checkOrCreateDumpDir( String dirName ) throws IOException {
+	File checkOrCreateDir( String dirName ) throws IOException {
 		File outDir = new File(dirName);
 		if ( outDir.exists() ) {
 			if ( outDir.isDirectory() ) {
@@ -610,6 +828,11 @@ public class ZenDeskTickets {
 
 		options.addOption( "o", "dump-out-dir", true, "Debugging: Dump JSON content being submitted to Apollo pipeline to this directory; not applicable for Solr" );
 		options.addOption( "i", "dump-in-dir", true, "Debugging: Dump JSON content recieved from ZenDesk to this directory" );
+		options.addOption( OptionBuilder.withLongOpt( "object-cache-dir" )
+                 .withDescription( "Cache directory for individual Zendesk object lookups; does NOT cache main tickets" )
+                 .hasArg()
+                 .withArgName("DIR_NAME")
+                 .create() );
 
 		options.addOption( "z", "zendesk", true, "Zendesk site, Eg: \"lucidimagination.zendesk.com\" (we add the https and /api/v2...)" );
 		// -p password overlaps with -p pipeline
@@ -660,6 +883,7 @@ public class ZenDeskTickets {
 	    String pipeline = cmd.getOptionValue( "pipeline" );
 	    String dumpInDir = cmd.getOptionValue( "dump-in-dir" );
 	    String dumpOutDir = cmd.getOptionValue( "dump-out-dir" );
+	    String cacheDir = cmd.getOptionValue( "object-cache-dir" );
    
 	    if ( null==apolloUrl && null!=pipeline ) {
 	        helpAndExit( "Pipeline can only be set when submitting to Apollo", 4 );
@@ -709,7 +933,7 @@ public class ZenDeskTickets {
 	        helpAndExit( "Must specifify ZenDesk host, username and password", 2 );
 	    }
 
-		ZenDeskTickets zd = new ZenDeskTickets( solr, apolloUrl, collection, pipeline, dumpInDir, dumpOutDir, zenDeskServer, username, password );
+		ZenDeskTickets zd = new ZenDeskTickets( solr, apolloUrl, collection, pipeline, dumpInDir, dumpOutDir, cacheDir, zenDeskServer, username, password );
 	    // UTF-8 test
 	    if( cmd.hasOption("8") ) {
 	    	zd.utf8Test();

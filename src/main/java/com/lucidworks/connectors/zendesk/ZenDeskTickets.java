@@ -110,10 +110,13 @@ public class ZenDeskTickets {
      // "via": payload.via
 	 ***/
 	// NOTE: "id" has special handling when injecting into Apollo pipeline
-	static String ID_FIELD = "id";
+	static final String ID_FIELD = "id";
+	static final String PRIMRY_URL_FIELD = "url";
+	// see tweakUrlFields
+	static final String SECONDARY_URL_FIELD = "json_url";
 	static List<String> FIELDS_COPY_AS_IS = Arrays.asList( new String[]{
-		"url",
-		ID_FIELD, // "id",
+		PRIMRY_URL_FIELD, // "url"
+		ID_FIELD,         // "id"
 		"created_at",
 		"updated_at",
 		"type",
@@ -131,7 +134,8 @@ public class ZenDeskTickets {
 		"problem_id",
 		"has_incidents",
 		"due_at",
-		"ticket_form_id"
+		"ticket_form_id",
+		SECONDARY_URL_FIELD  // "json_url", see tweakUrlFields
 		} );
 	static List<String> FIELDS_SIMPLE_LIST = Arrays.asList( new String[]{
 		"collaborator_ids",
@@ -359,8 +363,40 @@ public class ZenDeskTickets {
 		ObjectWriter writer = mapper.writerWithDefaultPrettyPrinter();
 		return writer.writeValueAsString( tree );
 	}
-	
+
+	void tweakUrlFields( JsonNode jdoc ) {
+		String id = exractIdFromJsonDocOrNull( jdoc );
+		if ( null==id ) {
+			throw new IllegalArgumentException( "JSON document doesn't have a valid \"id\" field." );
+		}
+        JsonNode oldUrlNode = jdoc.path( PRIMRY_URL_FIELD );
+		System.out.println( "Old URL Node, start: '" + oldUrlNode + "'" );
+        // Rename the JSON URL, if present
+        if ( null!=oldUrlNode ) {
+        	((ObjectNode) jdoc).remove( PRIMRY_URL_FIELD );
+	        String oldUrlStr = oldUrlNode.asText();
+	        if ( null!=oldUrlStr && ! oldUrlStr.equals("null") && oldUrlStr.trim().length()>0 ) {
+	        	oldUrlStr = oldUrlStr.trim();
+	            if ( oldUrlStr.startsWith("\"") ) {
+	            	oldUrlStr = oldUrlStr.substring( 1 );
+	            }
+	            if ( oldUrlStr.endsWith("\"") ) {
+	            	oldUrlStr = oldUrlStr.substring(0, oldUrlStr.length()-1);
+	            }
+	        	oldUrlStr = oldUrlStr.trim();
+	    		System.out.println( "Old URL Node, end: '" + oldUrlStr + "'" );
+	        	if ( ! oldUrlStr.isEmpty() && ! oldUrlStr.equals("null") ) {
+	        		((ObjectNode) jdoc).put( SECONDARY_URL_FIELD, oldUrlStr );
+	        	}
+	        }
+        }
+        // HTML clickable URL
+        String newUrl = "https://" + zdServer + "/agent/#/tickets/" + id;
+		((ObjectNode) jdoc).put( PRIMRY_URL_FIELD, newUrl );
+	}
+
 	SolrInputDocument jsonDoc2SolrDoc( JsonNode jdoc ) throws Exception {
+		tweakUrlFields( jdoc );
 		SolrInputDocument sdoc = new SolrInputDocument();
 		// Copy as-is fields
 		addAsIsFieldsToSolrDoc( jdoc, sdoc );
@@ -371,7 +407,8 @@ public class ZenDeskTickets {
 		return sdoc;
 	}
 	JsonNode jsonDoc2ApolloDoc( JsonNode jdoc, ObjectMapper mapper ) throws Exception {
-		String id = exractIdFromJsonDoc( jdoc );
+		tweakUrlFields( jdoc );
+		String id = exractIdFromJsonDocOrNull( jdoc );
 		if ( null==id ) {
 			throw new IllegalArgumentException( "JSON document doesn't have a valid \"id\" field." );
 		}
@@ -650,7 +687,7 @@ public class ZenDeskTickets {
     }
 
 	// Be super fussy
-	String exractIdFromJsonDoc( JsonNode jdoc ) {
+	String exractIdFromJsonDocOrNull( JsonNode jdoc ) {
 		String id = null;
         JsonNode idNode = jdoc.path( ID_FIELD ); // "id"
         if ( null!=idNode ) {

@@ -370,7 +370,6 @@ public class ZenDeskTickets {
 			throw new IllegalArgumentException( "JSON document doesn't have a valid \"id\" field." );
 		}
         JsonNode oldUrlNode = jdoc.path( PRIMRY_URL_FIELD );
-		System.out.println( "Old URL Node, start: '" + oldUrlNode + "'" );
         // Rename the JSON URL, if present
         if ( null!=oldUrlNode ) {
         	((ObjectNode) jdoc).remove( PRIMRY_URL_FIELD );
@@ -384,7 +383,6 @@ public class ZenDeskTickets {
 	            	oldUrlStr = oldUrlStr.substring(0, oldUrlStr.length()-1);
 	            }
 	        	oldUrlStr = oldUrlStr.trim();
-	    		System.out.println( "Old URL Node, end: '" + oldUrlStr + "'" );
 	        	if ( ! oldUrlStr.isEmpty() && ! oldUrlStr.equals("null") ) {
 	        		((ObjectNode) jdoc).put( SECONDARY_URL_FIELD, oldUrlStr );
 	        	}
